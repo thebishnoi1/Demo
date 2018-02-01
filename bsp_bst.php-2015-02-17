@@ -1,0 +1,371 @@
+<?php
+
+    /*
+    Plugin Name: Book Submission Tool plugin
+    Author: Boris
+    Version: Alpha
+    */
+ 
+/*/////////
+// TODO //
+
+- required fields
+- functions and methods to object (??)
+
+/////////*/
+
+ 
+// Stripe api data
+define('STRIPE_PRIVATE_KEY', 'sk_test_o0RZYwrnKY4aT4C6oEtjL22W ');
+define('STRIPE_PUBLIC_KEY', 'pk_test_lBbuAiNppAxXJ1cxxlqg5Wyi');
+define('STRIPE_CURRENCY', 'usd');
+
+define("BSP_BST_TABLE",  "bsp_bst_submissions" );
+define("BSP_BST_BOOK_URL", "bsp_bst_book_url");
+define("BSP_BST_USER_PAYMENTS", "bsp_bst_user_payments");
+
+$GLOBALS['bsp_bst_arrMysqlFields'] = array(
+    'asin' => 'varchar(255) not null',
+    'email' => 'varchar(255) not null',
+    'author_name' => 'varchar(100)',
+    'book_title' => 'varchar(255)',
+    'amazon_url' => 'varchar(255)',
+    'cover_img_url' => 'varchar(255)',
+    'start_date' => 'datetime',
+    'end_date' => 'datetime',
+    'days_free' => 'int',
+    'genre' => 'varchar(100)',
+    'sub_genre' => 'varchar(100)',
+    'regular_price' => 'double(10,2)',
+    'reviews' => 'int',
+    'rating' => 'varchar(50)',
+    'facebook_url' => 'varchar(150)',
+    'goodreads_url' => 'varchar(150)',
+    'tags' => 'varchar(255)',
+    'book_description' => 'text',
+    'author_bio' => 'text',
+    'user_id' => 'int',
+);  
+
+
+//    
+/////// LIST OF ACTIONS ///////
+//
+add_action('admin_menu', 'bsp_bst_create_admin_menu');
+
+// This will use implemented AJAX functionality (http://codex.wordpress.org/AJAX_in_Plugins )
+add_action( 'wp_ajax_bsp_bst_ajax', 'bsp_bst_ajax_router' );
+
+register_activation_hook( __FILE__, 'bsp_bst_install' );
+register_deactivation_hook( __FILE__, 'bsp_bst_uninstall' );
+
+add_shortcode( 'bst_register_form', 'bsp_bst_signup_shorttag' );
+add_filter( 'login_redirect', 'bsp_bst_login_redirect',10,3);
+
+add_action('admin_menu', 'remove_the_dashboard_for_non_admins');
+
+add_action( 'user_register', 'bsp_bst_user_register', 10, 1 );
+
+add_filter('admin_head', 'bsp_bst_make_menu_unfolded');
+
+//
+// END OF ACTIONS
+//
+
+
+//
+// [START] Show register on frontend and redirect to BST URL after login:
+//
+function bsp_bst_signup_shorttag( $atts )
+{
+    $a = shortcode_atts( array(
+        'foo' => 'something',
+        'bar' => 'something else',
+    ), $atts );
+
+    ob_start();
+    include 'pages/register.php';
+    return ob_get_clean();
+}
+
+function bsp_bst_login_redirect($redirect_to, $request, $user)
+{
+	if ( isset( $user->roles ) && is_array( $user->roles ) ) {
+		if ( ! in_array( 'administrator', $user->roles ) ) {
+			return admin_url('admin.php?page=bsp-bst-home');
+		}
+	}
+
+	return admin_url();
+}
+
+//
+// [END] Show register on frontend and redirect to BST URL after login:
+//
+
+function bsp_bst_make_menu_unfolded() {
+    print "<script>
+    	jQuery(document).ready(function(){
+    		jQuery('a.wp-menu-open').click();
+    	});
+	</script>";
+}
+
+// Display the Book Submission Tool sub-menu
+function bsp_bst_expand_menu()
+{
+	print "<script>
+    	jQuery(document).ready(function(){
+    		jQuery('#toplevel_page_bsp-bst-home > .wp-submenu').css('display','block');
+    	});
+	</script>";
+}
+
+// http://bavotasan.com/2008/hiding-the-wordpress-dashboard-for-non-admin-users/
+function remove_the_dashboard_for_non_admins () {
+	if (current_user_can('level_10')) {
+		return;
+	} else {
+ 		global $menu, $submenu, $user_ID;
+	    $the_user = new WP_User($user_ID);
+	    reset($menu); $page = key($menu);
+	    while ((__('Dashboard') != $menu[$page][0]) && next($menu))
+	            $page = key($menu);
+	    if (__('Dashboard') == $menu[$page][0]) unset($menu[$page]);
+	    reset($menu); $page = key($menu);
+	    while (!$the_user->has_cap($menu[$page][1]) && next($menu))
+	            $page = key($menu);
+	    if (preg_match('#wp-admin/?(index.php)?$#',$_SERVER['REQUEST_URI']) && ('index.php' != $menu[$page][2])){
+	            wp_redirect(get_option('siteurl') . '/wp-admin/profile.php');
+	    }
+	}
+}
+
+function bsp_bst_user_register($user_id)
+{
+	session_start();
+	if(isset($_SESSION['user_coupon']) && $_SESSION['user_coupon'] == 'fr33t00l'){
+		global $wpdb;	
+		$fields = array(
+			'user_id' => $user_id,
+		);
+		$table_name = $wpdb->prefix . BSP_BST_USER_PAYMENTS;
+		$wpdb->insert($table_name, $fields);
+	}
+}
+
+function bsp_bst_create_admin_menu()
+{
+	$icon = plugin_dir_url( __FILE__ ) . 'menu-icon.png';
+
+	$user_access_level = array(
+		'administrator' => 10,
+		'editor' => 7,
+		'author' => 2,
+		'contributor' => 1,
+		'subscriber' => 0,
+		'all' => 0
+	); // Required access level.
+
+    add_menu_page("Book Submission Tool", "Book Submission Tool", $user_access_level['all'], "bsp-bst-home", "bsp_bst_router", $icon, 3);
+    add_submenu_page("bsp-bst-home", "New submission", "Add a new book", $user_access_level['all'], "add-edit-book", "bsp_bst_router");
+
+	add_submenu_page("bsp-bst-home", "Manage books", "Manage books", $user_access_level['all'], "list-submissions", "bsp_bst_router");
+	// parrent slug = "" so this will hide menu item
+	add_submenu_page("", "Submit book", "Submit book", $user_access_level['all'], "submit-book", "bsp_bst_router");
+	add_submenu_page("", "Book Submission Tool Payment", "Book Submission Tool Payment", $user_access_level['all'], "bst-payment", "bsp_bst_router");
+	add_submenu_page("", "Checkout", "Checkout", $user_access_level['all'], "stripe-checkout", "bsp_bst_router");
+	add_submenu_page("bsp-bst-home", "Plugin settings", "Plugin settings", $user_access_level['administrator'], "plugin-settings", "bsp_bst_router");
+	add_submenu_page("bsp-bst-home", "Payment list", "Payment list", $user_access_level['administrator'], "payment-list", "bsp_bst_router");
+}
+
+function bsp_bst_router()
+{
+    echo '<h1>Book Submission Tool</h1>';
+	
+	// This will rewrite $page value if user has not paid.
+	$page = bsp_bst_block_not_premium_users($_GET['page']);
+
+    switch($page)
+    {
+        case "add-edit-book":
+			$_SESSION['book-id'] = $_GET['book-id'];
+            include 'pages/add-edit-book.php';
+        break;
+
+        case "view-submission":
+            // TODO...
+        break;
+		
+		case "bst-payment":
+			include 'pages/bst-payment.php';
+		break;
+		
+		case "stripe-checkout":
+			include 'pages/stripe-checkout.php';
+		break;
+
+	    case "submit-book":
+			// put book id in session so we can get id in submit-book.php file
+		    $_SESSION['book_id'] = $_GET['id'];
+		    include 'pages/submit-book.php';
+        break;
+		
+		case "plugin-settings":
+			include 'pages/plugin-settings.php';
+		break;
+		
+		case "payment-list":
+			include 'pages/payment-list.php';
+		break;
+
+        case 'list-submissions':
+            include 'pages/list-submissions.php';
+        break;
+
+        default:
+        	include 'pages/home.php';
+    }
+}
+
+function bsp_bst_block_not_premium_users($page)
+{
+	global $wpdb;
+	
+	$current_user = wp_get_current_user();
+	
+	if(in_array('administrator', $current_user->roles)){
+		return $page;
+	} else {
+		if(get_option('bsp_bst_free') == 'yes'){
+			if($page == 'plugin-settings' || $page == 'payment-list'){
+				return 'list-submissions';
+			}
+			return $page;
+		} else {
+			$user_payed = $wpdb->get_var("SELECT COUNT(*) 
+				FROM " . $wpdb->prefix . BSP_BST_USER_PAYMENTS . " 
+				WHERE user_id = '" . $current_user->ID . "'");
+			if($user_payed == 0){
+				if(isset($_GET['checkout'])){
+					return 'stripe-checkout';
+				} else {
+					return 'bst-payment';
+				}
+			} else {
+				if($page == 'plugin-settings' || $page == 'payment-list'){
+					return 'list-submissions';
+				}
+				return $page;
+			}
+		}
+	}
+}
+
+function bsp_bst_ajax_router()
+{
+    
+    switch($_GET['bsp_bst_action'])
+    {
+        // TODO...
+    }
+}
+
+// Function for loging errors
+function bsp_bst_logv2($file, $msg)
+{
+	$log_row = "[ " . date('Y-m-d H:i:s') . "] $msg \n";
+	$log_file = plugin_dir_path(__FILE__) . "logsv2/$file" . '.log';
+	file_put_contents($log_file, $log_row, FILE_APPEND);
+	return true;
+}
+
+function can_edit_book($book,$current_user)
+{
+	// Admin can look and edit all books
+	if(in_array('administrator', $current_user->roles)){
+		return true;
+	}
+
+	// User can only edit books that he added
+	if($current_user->ID != $book->user_id){
+		echo '<div class="message_box_failure">
+			<p><h3>ACCESS DENIED</h3></p>
+			<p><h4>You can not edit books you did not added!<h4></p>
+			</div>';
+		return false;
+	} else {
+		return true;
+	}
+}
+
+
+/* Install triggers */
+
+
+function bsp_bst_install()
+{
+    global $wpdb, $bsp_bst_arrMysqlFields;
+	
+	add_option('bsp_bst_price', '0', '', 'no');
+	add_option('bsp_bst_free', 'no', '', 'no');
+
+    $table_name = $wpdb->prefix . BSP_BST_TABLE;
+    
+    $arrSqlFields = array();
+    foreach($bsp_bst_arrMysqlFields as $fld => $sql)
+    {
+        $arrSqlFields[] = " `$fld` $sql ";
+    }
+
+    $sqlFields = implode(",", $arrSqlFields);
+
+    $sql = "CREATE TABLE $table_name (
+        id int NOT NULL AUTO_INCREMENT primary key,
+        `created` timestamp default CURRENT_TIMESTAMP not null,
+        $sqlFields
+    )";
+	
+    //bsp_bst_logv2('sql_debug',$sql);
+	
+    $wpdb->query($sql);
+	
+	$table_name = $wpdb->prefix . BSP_BST_BOOK_URL;
+	
+	$sql = "CREATE TABLE $table_name (
+		id int NOT NULL AUTO_INCREMENT primary key,
+		`created` timestamp default CURRENT_TIMESTAMP NOT NULL,
+		url varchar(150) NOT NULL,
+		book_id int NOT NULL
+	)";
+	
+	$wpdb->query($sql);
+	
+	$table_name = $wpdb->prefix . BSP_BST_USER_PAYMENTS;
+	
+	$sql = "CREATE TABLE $table_name(
+		id int NOT NULL AUTO_INCREMENT primary key,
+		user_id int NOT NULL,
+		`created` timestamp default CURRENT_TIMESTAMP NOT NULL
+	)";
+	
+	$wpdb->query($sql);
+}
+
+function bsp_bst_uninstall()
+{
+	global $wpdb;
+	
+	delete_option('bsp_bst_price');
+	delete_option('bsp_bst_free');
+	
+    $sql = "DROP TABLE " . $wpdb->prefix . BSP_BST_TABLE;
+    $wpdb->query($sql);
+	
+	$sql = "DROP TABLE " . $wpdb->prefix . BSP_BST_BOOK_URL;
+	$wpdb->query($sql);
+	
+	$sql = "DROP TABLE " . $wpdb->prefix . BSP_BST_USER_PAYMENTS;
+	$wpdb->query($sql);
+}
+
